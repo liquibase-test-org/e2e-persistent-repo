@@ -54,6 +54,49 @@ jobs:
           echo "env_name=$ENV_NAME" >> $GITHUB_OUTPUT
           echo "env_upper=$ENV_UPPER" >> $GITHUB_OUTPUT
 
+      - name: Verify PostgreSQL is ready
+        run: |
+          echo "==> Checking Docker status..."
+          docker --version
+
+          echo "==> Checking if e2e-postgres container is running..."
+          docker ps -a --filter name=e2e-postgres
+
+          if ! docker ps --filter name=e2e-postgres --filter status=running | grep -q e2e-postgres; then
+            echo "❌ PostgreSQL container is not running!"
+            echo "Attempting to start it..."
+            docker start e2e-postgres || {
+              echo "Failed to start existing container. Creating new one..."
+              docker run -d \
+                --name e2e-postgres \
+                --restart unless-stopped \
+                -e POSTGRES_DB=e2e_testdb \
+                -e POSTGRES_USER=e2e_user \
+                -e POSTGRES_PASSWORD=e2e_password \
+                -p 5432:5432 \
+                postgres:16-alpine
+              sleep 5
+            }
+          else
+            echo "✅ PostgreSQL container is running"
+          fi
+
+          echo "==> Waiting for PostgreSQL to be ready..."
+          for i in {1..30}; do
+            if docker exec e2e-postgres pg_isready -U e2e_user > /dev/null 2>&1; then
+              echo "✅ PostgreSQL is ready!"
+              docker exec e2e-postgres psql -U e2e_user -d e2e_testdb -c "SELECT version();"
+              exit 0
+            fi
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 2
+          done
+
+          echo "❌ PostgreSQL did not become ready in time"
+          echo "Container logs:"
+          docker logs e2e-postgres
+          exit 1
+
       - name: Run Liquibase Update
         working-directory: liquibase
         env:
